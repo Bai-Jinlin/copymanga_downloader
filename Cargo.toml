@@ -1,5 +1,5 @@
 [package]
-name = "rust_test"
+name = "copymanga_downloader"
 version = "0.1.0"
 edition = "2021"
 
@@ -17,3 +17,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 if_chain = "1.0.2"
 threadpool = "1.8.1"
+config = "0.13.3"
+serde = { version = "1.0.163", features = ["derive"] }
+state = "0.5.3"

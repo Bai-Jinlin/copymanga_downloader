@@ -1,17 +1,17 @@
 use bytes::Bytes;
 use comic::{Message, Messages};
+use settings::Settings;
 use if_chain::if_chain;
 use image::io::Reader as ImageReader;
 use image::{EncodableLayout, ImageOutputFormat};
+use state::Storage;
 
 use std::io::Cursor;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 use threadpool::ThreadPool;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
-
-
 
 use thirtyfour::{prelude::*, CapabilitiesHelper};
 
@@ -19,36 +19,49 @@ use crate::comic::ComicDriver;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod comic;
+mod settings;
 mod driver_helper;
 mod utils;
+
+static SETTINGS: Storage<Settings> = Storage::new();
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "rust_test=debug".into()),
+                .unwrap_or_else(|_| "debug".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    SETTINGS.set(Settings::new()?);
+
+    let settings = SETTINGS.get();
+
     let tx = driver_helper::start_firefox_driver(
-        "./driver/firefox.exe",
-        r"C:\Program Files\Mozilla Firefox\firefox.exe",
+        &SETTINGS.get().driver.driver_path,
+        &SETTINGS.get().driver.firefox_binary_path,
     );
 
     let mut caps = DesiredCapabilities::firefox();
-    let proxy_config = thirtyfour::Proxy::Manual {
-        http_proxy: Some("localhost:7890".to_owned()),
-        ssl_proxy: Some("localhost:7890".to_owned()),
-        socks_proxy: None,
-        socks_version: None,
-        socks_username: None,
-        socks_password: None,
-        ftp_proxy: None,
-        no_proxy: None,
-    };
-    caps.set_proxy(proxy_config)?;
+
+    if let Some(proxy) = settings.http_proxy.as_deref() {
+        let proxy = proxy.strip_prefix("http://").unwrap().to_owned();
+        tracing::debug!("proxy set: {}",proxy);
+
+        let proxy_config = thirtyfour::Proxy::Manual {
+            http_proxy: Some(proxy.clone()),
+            ssl_proxy: Some(proxy),
+            socks_proxy: None,
+            socks_version: None,
+            socks_username: None,
+            socks_password: None,
+            ftp_proxy: None,
+            no_proxy: None,
+        };
+        caps.set_proxy(proxy_config)?;
+    }
 
     let driver = WebDriver::new("http://localhost:4444", caps).await?;
     let comic_driver = ComicDriver::new(driver);
@@ -60,9 +73,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run(comic: ComicDriver) -> anyhow::Result<()> {
     let info = comic
-        .process_page(
-            "https://www.copymanga.site/comic/modujingbingdenuli",
-        )
+        .process_page("{}")
         .await?;
 
     // info.items = info.items.into_iter().skip(2).take(1).collect();
@@ -91,8 +102,13 @@ async fn process_msgs(mut msgs_rx: UnboundedReceiver<Messages>) -> anyhow::Resul
 
 async fn download_images(mut msg_rx: UnboundedReceiver<Message>) -> anyhow::Result<()> {
     // let semaphore = Semaphore::new(10);
-    let proxy_config = reqwest::Proxy::all("http://localhost:7890").unwrap();
-    let client = reqwest::Client::builder().proxy(proxy_config).build()?;
+    let mut client_builder = reqwest::Client::builder();
+    let settings = SETTINGS.get();
+    if let Some(proxy) = settings.http_proxy.as_deref() {
+        let proxy_config = reqwest::Proxy::all(proxy).unwrap();
+        client_builder=client_builder.proxy(proxy_config);
+    }
+    let client = client_builder.build()?;
 
     let (tx, rx) = tokio::sync::mpsc::channel(30);
     let handle = tokio::task::spawn_blocking(move || process_image(rx));
